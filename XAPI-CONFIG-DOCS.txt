@@ -1,0 +1,62 @@
+Program can be called with a single command line argument which can be a directory where config 
+files are located or it can be a path of the config file.
+If no arguments are specified the program will search its working directory for config files.
+
+General rules:
+everything keyword has to be in a single and different line
+new lines are allowed between keywords
+spaces, tabs and other whitespaces are allowed in each line, they will be ignored
+except between ' \; ' , ' " ' charachters
+additional comments can be present after a keyword, they will be ignored EXCEPT after limit & cqfname
+
+domain : the main website domain eg: www.github.com, github.com
+rules:
+-can only be specified once
+-must be sepcifed
+syntax: domain="<website>"
+
+target : the sub target eg: /subpage/me
+rules:
+-can only be specified once
+-must be sepcifed
+syntax: target="<target>"
+
+bounds : a regex search statment declaration that will search new webpage run new regex statement until its done
+rules:
+-must be sepcifed
+-can be specified multiple times
+-recursive specification allowed
+-separator charachter \;
+-spaces between \; chars are preserved, no extra spaces
+syntax: bounds={  \;<regex statement>\;   \; <regex group which contains new webpage link>\; <optional new bounds>{...}  }
+eg: 	bounds={ \;hello(.+?)\; \;  1 \;}
+	bounds={ \;hello(.+?)\; \;  1 \; {  \;second statement\;   \;  0 \;}  }
+
+incr : increments a part of the target by a specified value
+rules:
+-optional
+-can be specified multiple times
+-valid position in the target
+syntax: incr=[<position of the value to be incremented>,<length of the value>,<increment ammount>]
+
+limit : the max number of increments preformed
+rules:
+-optional
+-can only be specified once
+-bigger than 1
+syntax: limit=<number>
+
+append : append a runtime provided string to the target at a specified position with a predetermained preceeding string
+	a message can be set which the user will see when entering append string
+rules:
+-optional
+-minus 1 means end of target string
+-preceeding string can be empty
+syntax: append=["<constant preceeding string>",<append position/-1>,"<user prompt string>"]
+
+cqfname : consequitve file naming, files will be numbered in the order they are downloaded
+rules:
+-optional
+-can only be specified once
+-only true/false valid
+syntax : cqfname=<true/false>

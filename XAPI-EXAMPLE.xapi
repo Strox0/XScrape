@@ -1,0 +1,11 @@
+target="/0/" //comment
+limit=5
+
+domain="twitter.com" //comment
+
+append=["&tag=",-1,"This is a user message : "]
+append=["",1,"This is another message : "]
+
+incr=[1,1,1] //comment
+
+bounds={\;some regex\; \;10\;} //comment
