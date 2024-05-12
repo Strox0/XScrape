@@ -251,7 +251,7 @@ void CfgParser::Parse()
 				m_error.Set("Incorrect format : expected char '[' (Line " + std::to_string(line_count) + ")");
 				return;
 			}
-			line.erase(0, quo_s+1);
+
 			size_t quo_e = line.find(']');
 			if (quo_e == std::string::npos)
 			{
@@ -259,24 +259,51 @@ void CfgParser::Parse()
 				return;
 			}
 
-			std::string data = line.substr(0, quo_e);
-			std::stringstream ss(data);
+			std::stringstream dataS(line.substr(quo_s + 1, quo_e - quo_s - 1));
 
 			int var_count = 0;
 			std::string token;
 			_Data::Incr incr;
-			while (std::getline(ss, token, ','))
+			while (std::getline(dataS, token, ','))
 			{
 				var_count++;
 				switch (var_count)
 				{
 				case 1:
 				{
+					if (token.starts_with('"'))
+					{
+						size_t quo_e = token.find_last_of('"');
+						token = token.substr(1, quo_e - 1);
+
+						if (!target_found)
+						{
+							m_error.Set("Incorrect format : 'target' not defined before search based increment position acquiry (Line " + std::to_string(line_count) + ")");
+							return;
+						}
+
+						size_t pos = m_data.target.find(token) + token.length();
+						if (pos == std::string::npos)
+						{
+							m_error.Set("Incorrect value : search string for increment position not found in 'target' (Line " + std::to_string(line_count) + ")");
+							return;
+						}
+						incr.pos = pos;
+						break;
+					}
+
+					if (token == "-")
+					{
+						incr.pos = -1;
+						break;
+					}
+
 					if (!OnlyNums(token))
 					{
 						m_error.Set("Incorrect format : non numerical charachters found where not expected (Line " + std::to_string(line_count) + ")");
 						return;
 					}
+
 					incr.pos = std::stoull(token);
 					break;
 				}
@@ -293,7 +320,6 @@ void CfgParser::Parse()
 						return;
 					}
 					break;
-					break;
 				case 3:
 					if (!OnlyNums(token))
 					{
@@ -301,7 +327,11 @@ void CfgParser::Parse()
 						return;
 					}
 					incr.ammount = std::stoull(token);
-					break;
+					if (incr.ammount < 1)
+					{
+						m_error.Set("Incorrect value : increment ammount can not be less than 1 (Line " + std::to_string(line_count) + ")");
+						return;
+					}
 					break;
 				default:
 					m_error.Set("Incorrect format : incr doesn't take " + std::to_string(var_count) + " arguments " + "(Line " + std::to_string(line_count) + ")");
@@ -492,19 +522,33 @@ void CfgParser::Parse()
 	
 	if (m_data.increments.size() != 0)
 	{
+		int last_pos_count = 0;
 		for (auto& i : m_data.increments)
 		{
-			if (i.pos+i.length-1 >= m_data.target.size())
+			if (i.pos != -1)
 			{
-				m_error.Set("Incorrect value : increment range exceeding target length");
-				return;
-			}
-			std::string mod_nums = m_data.target.substr(i.pos, i.length);
+				if (i.pos+i.length-1 >= m_data.target.size())
+				{
+					m_error.Set("Incorrect value : increment range exceeding target length");
+					return;
+				}
 			
-			if (!OnlyNums(mod_nums))
+				std::string mod_nums = m_data.target.substr(i.pos, i.length);
+
+				if (!OnlyNums(mod_nums))
+				{
+					m_error.Set("Incorrect value : non numerical charachters found at increment position");
+					return;
+				}
+			}
+			else
 			{
-				m_error.Set("Incorrect value : non numerical charachters found at increment position");
-				return;
+				last_pos_count++;
+				if (last_pos_count > 1)
+				{
+					m_error.Set("Incorrect value : multiple increment positions set to the end of 'target'");
+					return;
+				}
 			}
 		}
 	}

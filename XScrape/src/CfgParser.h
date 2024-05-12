@@ -19,8 +19,8 @@ struct _Data
 	struct Incr
 	{
 		Incr() : pos(0), length(0), ammount(0) {};
-		Incr(size_t pos, size_t len, size_t ammount) : pos(pos), length(len), ammount(ammount) {};
-		size_t pos;
+		Incr(long long pos, size_t len, size_t ammount) : pos(pos), length(len), ammount(ammount) {};
+		long long pos;
 		size_t length;
 		size_t ammount;
 	};

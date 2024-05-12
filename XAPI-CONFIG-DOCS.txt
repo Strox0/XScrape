@@ -37,6 +37,8 @@ rules:
 -optional
 -can be specified multiple times
 -valid position in the target
+-writing the symbol '-' in the place of the position will mean the end
+-can write a string to search for in the target, position will be after the string
 syntax: incr=[<position of the value to be incremented>,<length of the value>,<increment ammount>]
 
 limit : the max number of increments preformed

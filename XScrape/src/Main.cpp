@@ -56,6 +56,15 @@ int main(int argc, char* argv[])
 	else
 		parser = new CfgParser();
 
+	_Error err = parser->Error();
+	if (err)
+	{
+		std::cout << "Parser error : \n\t" << err.message << std::endl;
+		if (managed_instance)
+			CloseHandle(coms_pipe);
+		return 1;
+	}
+
 	std::string outfolder;
 
 	if (managed_instance)
@@ -77,20 +86,13 @@ int main(int argc, char* argv[])
 	else
 	{
 		std::cout << "Enter output folder name (Press enter to use default) : ";
+		std::cin.ignore();
+		std::cin.clear();
 		std::getline(std::cin, outfolder);
 	}
 
 	if (outfolder.empty())
 		outfolder = "output";
-
-	_Error err = parser->Error();
-	if (err)
-	{
-		std::cout << "Parser error : " << err.message << std::endl;
-		if (managed_instance)
-			CloseHandle(coms_pipe);
-		return 1;
-	}
 
 	_Data data = parser->Data();
 
@@ -149,7 +151,10 @@ int main(int argc, char* argv[])
 			}
 		}
 
-		i.pos += pos_mod;
+		if (i.pos == -1)
+			i.pos = data.target.size() - i.length;
+		else
+			i.pos += pos_mod;
 	}
 
 	std::cout << "Domain : " << data.domain;
