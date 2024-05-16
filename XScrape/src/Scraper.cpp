@@ -3,23 +3,22 @@
 #include <wincrypt.h>
 #include <fstream>
 #include <sstream>
-#include <istream>
-#include <streambuf>
+#include <iostream>
+#include <regex>
+#include <filesystem>
 #include <queue>
+#include "boost/asio/buffers_iterator.hpp"
+#include <boost/iostreams/filtering_stream.hpp>
+#include <boost/iostreams/filter/gzip.hpp>
+#include <boost/iostreams/filter/zlib.hpp>
+#include <boost/iostreams/copy.hpp>
+
 #include "Random.h"
 #include "UserAgents.h"
-#include <regex>
-#include <iostream>
-#include "boost/iostreams/filtering_stream.hpp"
-#include "boost/iostreams/filter/gzip.hpp"
-#include "boost/iostreams/filter/zlib.hpp"
-#include "boost/iostreams/copy.hpp"
-#include "boost/asio.hpp"
-
 #include "InstStatus.h"
 
-#pragma comment (lib, "crypt32.lib")
-#pragma comment (lib, "cryptui.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "cryptui.lib")
 
 namespace http = boost::beast::http;
 namespace ssl = boost::asio::ssl;
@@ -32,7 +31,7 @@ struct incr_compr
 	}
 };
 
-Scraper::Scraper(_Data& data) : m_data(data), m_outfolder("./output/")
+Scraper::Scraper(_Data& data) : m_data(data), m_output_folder("./output/")
 {
 	Random::Number<int> num(0, UserAgents::size - 1);
 	m_user_agent = UserAgents::agents[num.Gen()];
@@ -41,22 +40,24 @@ Scraper::Scraper(_Data& data) : m_data(data), m_outfolder("./output/")
 		std::sort(data.increments.begin(), data.increments.end(), incr_compr());
 }
 
-Scraper::Scraper(_Data& data, std::string ofolder_name) : m_data(data), m_outfolder(ofolder_name)
+Scraper::Scraper(_Data& data, const std::string& out_folder_name) : m_data(data), m_output_folder("./" + out_folder_name + "/")
 {
-	m_outfolder.push_back('/');
-	m_outfolder.insert(0, "./");
-
 	Random::Number<int> num(0, UserAgents::size - 1);
 	m_user_agent = UserAgents::agents[num.Gen()];
 
 	if (data.increments.size() > 1)
 		std::sort(data.increments.begin(), data.increments.end(), incr_compr());
+}
+
+Scraper::~Scraper()
+{
+	Close(*m_stream, true);
 }
 
 void Scraper::Start()
 {
 	int img_num = 0;
-	if (Connect(m_data.domain, &m_stream, &m_ssl_ctx))
+	if (!Connect(m_data.domain, &m_stream, &m_ssl_ctx)) //False if connection failed
 		return;
 
 	m_request.method(http::verb::get);
@@ -70,49 +71,25 @@ void Scraper::Start()
 
 	for (size_t mi = 0; mi < m_data.limit; mi++)
 	{
-		{
-			int it_count = 0;
-			while (it_count < 5)
-			{
-				it_count++;
-				try
-				{
-					boost::beast::flat_buffer buffer;
-					http::response_parser<http::dynamic_body> response;
-					CreateRequest(*m_stream, response, buffer);
 
-					DecodeBody(response, m_mainbody);
-					break;
-				}
-				catch (boost::system::system_error const& e)
-				{					
-					if (e.code() == boost::asio::error::eof)
-					{
-						Close(*m_stream);
-						delete m_stream;
-						delete m_ssl_ctx;
-						if (Connect(m_data.domain, &m_stream, &m_ssl_ctx))
-							return;
-						break;
-					}
-					else
-						throw e;
-				}
-				Sleep(1000);
-			}
-		}
+		boost::beast::flat_buffer buffer;
+		http::response_parser<http::dynamic_body> response;
+		if (!CreateRequest(*m_stream, response, buffer))
+			return;
 
-		for (auto& bounds : m_data.bounds)
+		DecodeBody(response, m_mainbody);
+
+		for (const auto& bounds : m_data.bounds)
 		{
 			std::queue<task> tasks;
-			tasks.push({ m_mainbody,0 });
+			tasks.push({ m_mainbody, 0 });
 
 			while (!tasks.empty())
 			{
 				task curr_task = tasks.front();
 				tasks.pop();
 
-				std::regex start_reg(bounds[curr_task.operationIndex].expr);
+				std::regex start_reg(bounds[curr_task.operation_index].expr);
 
 				std::sregex_iterator reg_it(curr_task.webpage.cbegin(), curr_task.webpage.cend(), start_reg);
 				std::sregex_iterator reg_it_end;
@@ -120,9 +97,10 @@ void Scraper::Start()
 				if (reg_it == reg_it_end)
 				{
 					std::cout << "Warning no regex matches found\n";
+					continue;
 				}
 
-				if (curr_task.operationIndex + 1 == bounds.size())
+				if (curr_task.operation_index == bounds.size() - 1)
 				{
 					while (reg_it != reg_it_end)
 					{
@@ -141,9 +119,9 @@ void Scraper::Start()
 							}
 						}
 
-						std::string result = reg_it->str(std::stoull(bounds[curr_task.operationIndex].group_num));
-						std::unique_ptr<boost::asio::ssl::stream<tcp::socket>> curr_stream = nullptr;
-						std::unique_ptr<ssl::context> ssl_ctx = nullptr;
+						std::string result = reg_it->str(std::stoull(bounds[curr_task.operation_index].group_num));
+						std::unique_ptr<boost::asio::ssl::stream<tcp::socket>> curr_stream;
+						std::unique_ptr<ssl::context> ssl_ctx;
 						bool new_website = false;
 						std::string domain = m_data.domain;
 
@@ -158,7 +136,7 @@ void Scraper::Start()
 							{
 								domain = result.substr(0, target_i);
 
-								while (Connect(domain, curr_stream, ssl_ctx))
+								while (!Connect(domain, &curr_stream, &ssl_ctx))
 								{
 									Sleep(10);
 								}
@@ -167,9 +145,8 @@ void Scraper::Start()
 							}
 						}
 						else
-							curr_stream.reset(m_stream);
+							curr_stream.reset(m_stream.release());
 
-						//create head request
 						m_request.target(result);
 						m_request.method(http::verb::get);
 						m_request.set(http::field::host, domain);
@@ -181,12 +158,17 @@ void Scraper::Start()
 						boost::beast::flat_buffer buffer;
 						http::response_parser<http::dynamic_body> res;
 						res.body_limit(boost::none);
-						CreateRequest(*curr_stream, res, buffer,true);
+						if (!CreateRequest(*curr_stream, res, buffer, true))
+						{
+							Close(*curr_stream);
+							if (new_website)
+								Close(*m_stream);
+							return;
+						}
 						std::cout << "\tDone\n";
 
 						if (res.get().result() == http::status::ok)
 						{
-							//determain image size, extension
 							image_size = std::stoull(res.get()[http::field::content_length]);
 							std::string content_type = res.get()[http::field::content_type];
 
@@ -218,7 +200,6 @@ void Scraper::Start()
 
 						if (res.get().find(http::field::content_encoding) != res.get().end())
 						{
-							std::cout << "\tDecoding...\n";
 							boost::iostreams::filtering_istream decoder;
 							std::string encoding = res.get()[http::field::content_encoding];
 							std::stringstream bufferStream;
@@ -234,26 +215,25 @@ void Scraper::Start()
 
 							std::vector<unsigned char> decoded_img_buffer;
 							boost::iostreams::copy(decoder, std::back_inserter(decoded_img_buffer));
-							std::cout << "\tDone\n";
+
 							SaveImage(decoded_img_buffer.data(), decoded_img_buffer.size(), extension);
 						}
 						else
 							SaveImage(img_buffer.data(), img_buffer.size(), extension);
 
 						if (new_website)
-						{
 							Close(*curr_stream);
-						}
+						else
+							m_stream.reset(curr_stream.release());
 						Sleep(100);
 						reg_it++;
 					}
 				}
-
-				if (curr_task.operationIndex < bounds.size() - 1)
+				else if (curr_task.operation_index < bounds.size() - 1)
 				{
 					while (reg_it != reg_it_end)
 					{
-						std::string result = reg_it->str(std::stoull(bounds[curr_task.operationIndex].group_num));
+						std::string result = reg_it->str(std::stoull(bounds[curr_task.operation_index].group_num));
 
 						m_request.target(result);
 						m_request.method(http::verb::get);
@@ -264,7 +244,7 @@ void Scraper::Start()
 
 						std::string body;
 						DecodeBody(response, body);
-						tasks.push({ body,curr_task.operationIndex + 1 });
+						tasks.push({ body,curr_task.operation_index + 1 });
 
 						Sleep(100);
 						reg_it++;
@@ -329,14 +309,20 @@ bool Scraper::Close(ssl::stream<boost::asio::ip::tcp::socket>& stream,bool force
 	}
 	else
 		return false;
+
+	if (ec && ec != boost::asio::error::eof && ec.value() != 1) 
+	{
+		std::cerr << "Error shutting down SSL stream: " << ec.value() << '\n';
+		return false;
+	}
+	return true;
 }
 
-void Scraper::CreateRequest(boost::asio::ssl::stream<tcp::socket>& stream, http::response_parser<http::dynamic_body>& response, boost::beast::flat_buffer& buffer, bool show_progress,int max_it,bool only_header)
+template <typename BodyType>
+bool Scraper::CreateRequest(boost::asio::ssl::stream<tcp::socket>& stream, http::response_parser<BodyType>& response, boost::beast::flat_buffer& buffer, bool show_progress, int max_attempts, bool only_header)
 {
-	int iteration = 0;
-	while (iteration < max_it)
+	for (int attempt = 0; attempt < max_attempts; ++attempt)
 	{
-		iteration++;
 		http::write(stream, m_request);
 
 		if (!show_progress)
@@ -349,7 +335,6 @@ void Scraper::CreateRequest(boost::asio::ssl::stream<tcp::socket>& stream, http:
 		else
 		{
 			size_t read = 0;
-
 			if (only_header)
 			{
 				while (!response.is_header_done())
@@ -375,6 +360,7 @@ void Scraper::CreateRequest(boost::asio::ssl::stream<tcp::socket>& stream, http:
 
 		if (response.get().result() == http::status::service_unavailable || response.get().result() == http::status::too_many_requests)
 		{
+			std::cout << "Waiting, retrying after : ";
 			if (response.get().find(http::field::retry_after) != response.get().end())
 			{
 				std::string sleep_time = response.get().at(http::field::retry_after);
@@ -383,87 +369,26 @@ void Scraper::CreateRequest(boost::asio::ssl::stream<tcp::socket>& stream, http:
 					sleep_time = "1";
 
 				size_t wait = std::stoull(sleep_time);
-				wait *= 1000;
-
-				Sleep(wait);
+				std::cout << wait << " seconds\n";
+				Sleep(wait * 1000);
 			}
 			else
+			{
+				std::cout << "5 seconds\n";
 				Sleep(5000);
+			}
 		}
 		else
-			break;
+			return false;
 	}
-}
 
-void Scraper::CreateRequest(boost::asio::ssl::stream<tcp::socket>& stream, http::response_parser<http::buffer_body>& response, boost::beast::flat_buffer& buffer, bool show_progress, int max_it, bool only_header)
-{
-	int iteration = 0;
-	while (iteration < max_it)
-	{
-		iteration++;
-		http::write(stream, m_request);
-
-		if (!show_progress)
-		{
-			if (only_header)
-				http::read_header(stream, buffer, response);
-			else
-				http::read(stream, buffer, response);
-		}
-		else
-		{
-			size_t read = 0;
-
-			if (only_header)
-			{
-				while (!response.is_header_done())
-				{
-					read += http::read_some(stream, buffer, response);
-					std::cout << "\rReciving : " << (double)read / 1000.0 << " kb";
-				}
-			}
-			else
-			{
-				while (!response.is_done())
-				{
-					read += http::read_some(stream, buffer, response);
-					std::cout << "\rReciving : " << (double)read/1000.0 << " kb";
-				}
-			}
-		}
-		
-		if (response.get().result() == http::status::ok)
-			break;
-
-		std::cout << m_request.at(http::field::host) << m_request.target() << " Not OK, status Code : " << response.get().result_int() << std::endl;
-
-		if (response.get().result() == http::status::service_unavailable || response.get().result() == http::status::too_many_requests)
-		{
-			if (response.get().find(http::field::retry_after) != response.get().end())
-			{
-				std::string sleep_time = response.get().at(http::field::retry_after);
-
-				if (sleep_time[0] < '0' || sleep_time[0] > '9')
-					sleep_time = "1";
-
-				size_t wait = std::stoull(sleep_time);
-				wait *= 1000;
-
-				Sleep(wait);
-			}
-			else
-				Sleep(5000);
-		}
-		else
-			break;
-	}
+	return true;
 }
 
 void Scraper::DecodeBody(http::response_parser<http::dynamic_body>& response, std::string& outBody)
 {
 	if (response.get().find(http::field::content_encoding) != response.get().end())
 	{
-		std::cout << "Decoding...\n";
 		boost::iostreams::filtering_istream decoder;
 		std::string encoding = response.get()[http::field::content_encoding];
 		std::stringstream bufferStream;
@@ -480,7 +405,6 @@ void Scraper::DecodeBody(http::response_parser<http::dynamic_body>& response, st
 
 		std::stringstream stringBodyStream;
 		boost::iostreams::copy(decoder, stringBodyStream);
-		std::cout << "Done...\n";
 		outBody = stringBodyStream.str();
 	}
 	else
@@ -491,7 +415,6 @@ void Scraper::DecodeBody(http::response<http::dynamic_body>& response, std::stri
 {
 	if (response.find(http::field::content_encoding) != response.end())
 	{
-		std::cout << "Decoding...\n";
 		boost::iostreams::filtering_istream decoder;
 		std::string encoding = response[http::field::content_encoding];
 		std::stringstream bufferStream;
@@ -508,60 +431,13 @@ void Scraper::DecodeBody(http::response<http::dynamic_body>& response, std::stri
 
 		std::stringstream stringBodyStream;
 		boost::iostreams::copy(decoder, stringBodyStream);
-		std::cout << "Done...\n";
 		outBody = stringBodyStream.str();
 	}
 	else
 		outBody = boost::beast::buffers_to_string(response.body().data());
 }
 
-bool Scraper::Connect(std::string domain, boost::asio::ssl::stream<tcp::socket>** outStream, boost::asio::ssl::context** outSslContext)
-{
-	std::string port = "443";
-	size_t port_pos = domain.rfind(':');
-	if (port_pos != std::string::npos)
-	{
-		port = domain.substr(port_pos + 1);
-		domain.erase(domain.begin()+port_pos,domain.end());
-	}
-
-	*outSslContext = new boost::asio::ssl::context(ssl::context_base::tlsv12_client);
-	LoadRootCerts(*(*(outSslContext)));
-	(*(outSslContext))->set_verify_mode(ssl::context_base::verify_peer);
-	*outStream = new boost::asio::ssl::stream<tcp::socket>(m_ioc, *(*(outSslContext)));
-
-	if (!SSL_set_tlsext_host_name((*(outStream))->native_handle(), domain.data()))
-	{
-		delete *outStream;
-		delete *outSslContext;
-		return true;
-	}
-
-	boost::system::error_code ec;
-	tcp::resolver reslover(m_ioc);
-	boost::asio::connect((*(outStream))->next_layer(), reslover.resolve(domain,port),ec);
-
-	if (ec)
-	{
-		delete* outStream;
-		delete* outSslContext;
-		return true;
-	}
-
-	(*(outStream))->handshake(ssl::stream_base::client,ec);
-
-	if (ec)
-	{
-		(*(outStream))->next_layer().close();
-		delete* outStream;
-		delete* outSslContext;
-		return true;
-	}
-
-	return false;
-}
-
-bool Scraper::Connect(std::string domain, std::unique_ptr<boost::asio::ssl::stream<tcp::socket>>& outStream, std::unique_ptr<boost::asio::ssl::context>& outSslContext)
+bool Scraper::Connect(std::string domain, std::unique_ptr<boost::asio::ssl::stream<tcp::socket>>* outStream, std::unique_ptr<boost::asio::ssl::context>* outSslContext)
 {
 	std::string port = "443";
 	size_t port_pos = domain.rfind(':');
@@ -571,40 +447,40 @@ bool Scraper::Connect(std::string domain, std::unique_ptr<boost::asio::ssl::stre
 		domain.erase(domain.begin() + port_pos, domain.end());
 	}
 
-	outSslContext.reset(new boost::asio::ssl::context(ssl::context_base::tlsv12_client));
-	LoadRootCerts(*(outSslContext));
-	outSslContext->set_verify_mode(ssl::context_base::verify_peer);
-	outStream.reset(new boost::asio::ssl::stream<tcp::socket>(m_ioc, *outSslContext));
+	*outSslContext = std::make_unique<boost::asio::ssl::context>(ssl::context_base::tlsv12_client);
+	LoadRootCerts(**outSslContext);
+	(*outSslContext)->set_verify_mode(ssl::context_base::verify_peer);
+	*outStream = std::make_unique<boost::asio::ssl::stream<tcp::socket>>(m_ioc, **outSslContext);
 
-	if (!SSL_set_tlsext_host_name(outStream->native_handle(), domain.data()))
+	if (!SSL_set_tlsext_host_name((*outStream)->native_handle(), domain.data()))
 	{
-		outStream.release();
-		outSslContext.release();
-		return true;
+		outStream->release();
+		outSslContext->release();
+		return false;
 	}
 
 	boost::system::error_code ec;
 	tcp::resolver reslover(m_ioc);
-	boost::asio::connect(outStream->next_layer(), reslover.resolve(domain, port), ec);
+	boost::asio::connect((*outStream)->next_layer(), reslover.resolve(domain, port), ec);
 
 	if (ec)
 	{
-		outStream.release();
-		outSslContext.release();
-		return true;
+		outStream->release();
+		outSslContext->release();
+		return false;
 	}
 
-	outStream->handshake(ssl::stream_base::client, ec);
+	(*outStream)->handshake(ssl::stream_base::client, ec);
 
 	if (ec)
 	{
-		outStream->next_layer().close();
-		outStream.release();
-		outSslContext.release();
-		return true;
+		(*outStream)->next_layer().close();
+		outStream->release();
+		outSslContext->release();
+		return false;
 	}
 
-	return false;
+	return true;
 }
 
 void Scraper::LoadRootCerts(boost::asio::ssl::context& ctx)
@@ -635,13 +511,13 @@ void Scraper::LoadRootCerts(boost::asio::ssl::context& ctx)
 	SSL_CTX_set_cert_store(ctx.native_handle(), store);
 }
 
-void Scraper::SaveImage(void* data, size_t data_size,std::string extension)
+void Scraper::SaveImage(void* data, size_t data_size, const std::string& extension)
 {
-	static bool dir_exists_run = false;
-	if (!dir_exists_run)
+	static bool dir_checked = false;
+	if (!dir_checked)
 	{
-		if (!std::filesystem::exists(m_outfolder))
-			std::filesystem::create_directories(m_outfolder);
+		if (!std::filesystem::exists(m_output_folder))
+			std::filesystem::create_directories(m_output_folder);
 		else
 		{
 			MessageBeep(MB_ICONEXCLAMATION);
@@ -652,17 +528,14 @@ void Scraper::SaveImage(void* data, size_t data_size,std::string extension)
 			if (yn == 'y' || yn == 'Y')
 			{
 				int number = 0;
-				//std::string dirn = "./output-0/";
-				std::string dirn = m_outfolder;
-				dirn.insert(dirn.size() - 1, "-0");
-				while (std::filesystem::exists(dirn))
+				std::string new_folder_name = m_output_folder;
+				new_folder_name.insert(new_folder_name.size() - 1, "-0");
+				while (std::filesystem::exists(new_folder_name) && number < 11)
 				{
-					number++;
-					dirn.erase(dirn.end() - 1, dirn.end());
-					dirn.append(std::to_string(number) + '/');
+					new_folder_name.replace(new_folder_name.size() - 2, 1, std::to_string(++number));
 				}
-				std::filesystem::rename(m_outfolder, dirn);
-				std::filesystem::create_directories(m_outfolder);
+				std::filesystem::rename(m_output_folder, new_folder_name);
+				std::filesystem::create_directories(m_output_folder);
 			}
 			else if (yn != 'n' && yn != 'N')
 			{
@@ -670,7 +543,7 @@ void Scraper::SaveImage(void* data, size_t data_size,std::string extension)
 				throw std::runtime_error("error");
 			}
 		}
-		dir_exists_run = true;
+		dir_checked = true;
 	}
 
 	std::string filename;
@@ -678,39 +551,33 @@ void Scraper::SaveImage(void* data, size_t data_size,std::string extension)
 	{
 		do
 		{
-			filename = m_outfolder + Random::String(20, Random::CharSetFlags::Small | Random::CharSetFlags::Numbers) + extension;
+			filename = m_output_folder + Random::String(20, Random::CharSetFlags::Small | Random::CharSetFlags::Numbers) + extension;
 		} while (std::filesystem::exists(filename));
 	}
 	else
 	{
 		static int num = 0;
-		static bool run = false;
+		static bool run_once = false;
 
-		if (!run)
+		if (!run_once)
 		{
-			for (auto& i : std::filesystem::directory_iterator(m_outfolder))
+			for (auto& i : std::filesystem::directory_iterator(m_output_folder))
 			{
 				std::string fn = i.path().stem().string();
 
-				bool isAllDigits = std::all_of(fn.begin(), fn.end(), ::isdigit);
-
-				if (!isAllDigits)
-					continue;
-
-				int number = std::stoi(fn);
-				if (number >= num)
-					num = number + 1;
+				if (std::all_of(fn.begin(), fn.end(), ::isdigit))
+					num = std::max(num, std::stoi(fn) + 1);
 			}
-			run = true;
+			run_once = true;
 		}
 		else
 			++num;
 
-		filename = m_outfolder + std::to_string(num) + extension;
+		filename = m_output_folder + std::to_string(num) + extension;
 	}
 
 	std::ofstream file(filename, std::ios::binary);
-	file.write((char*)data, data_size);
+	file.write((const char*)data, data_size);
 	file.close();
 
 	std::cout << "Output : " << filename << '\n';

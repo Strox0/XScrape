@@ -96,7 +96,7 @@ int main(int argc, char* argv[])
 
 	_Data data = parser->Data();
 
-	std::vector<std::pair<size_t, size_t>> pos_mods;
+	std::vector<std::pair<long long, size_t>> pos_mods;
 	for (const auto& i : data.appends)
 	{
 		std::string input;
@@ -132,7 +132,7 @@ int main(int argc, char* argv[])
 
 			data.target.insert(i.append_pos + pos_mod, input);
 
-			pos_mods.push_back(std::make_pair<size_t, size_t>(i.append_pos, input.size()));
+			pos_mods.push_back(std::make_pair<long long, size_t>(i.append_pos, input.size()));
 		}
 		else
 		{
@@ -196,17 +196,10 @@ int main(int argc, char* argv[])
 	
 	if (!managed_instance)
 	{
-		std::cout << "\nPress ESC to exit\n";
-
-		HWND window = GetConsoleWindow();
-		MessageBeep(MB_ICONASTERISK);
-
-		while (true)
-		{
-			Sleep(1);
-			if (GetAsyncKeyState(VK_ESCAPE) & 0x01 && GetForegroundWindow() == window)
-				break;
-		}
+		std::cout << "\nPress any key to exit\n";
+		std::cin.ignore();
+		std::cin.clear();
+		std::cin.get();
 	}
 	else
 	{
